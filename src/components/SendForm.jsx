@@ -72,7 +72,7 @@ export default function SendForm({
           {sending ? "sending…" : "send drop →"}
         </button>
 
-        {/* 📷 IMAGE UPLOAD BUTTON ADDED HERE */}
+        {/* 📷 IMAGE UPLOAD BUTTON */}
         <div
           style={{
             display: "inline-flex",

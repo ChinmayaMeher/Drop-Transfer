@@ -9,7 +9,6 @@ import {
   uploadBytes,
   getDownloadURL,
 } from "firebase/storage";
-
 import { storage } from "./firebase";
 import {
   ref,
@@ -24,13 +23,8 @@ import { db } from "./firebase";
 
 export default function App() {
   const [myId] = useState(() => {
-    // Check if a Drop ID already exists for this tab session
     const savedId = sessionStorage.getItem("drop_id");
-    if (savedId) {
-      return savedId;
-    }
-
-    // If it's a completely new visit, generate a new one and save it to the session
+    if (savedId) return savedId;
     const newId = generateId();
     sessionStorage.setItem("drop_id", newId);
     return newId;
@@ -46,7 +40,7 @@ export default function App() {
   const [tab, setTab] = useState("inbox");
   const pollRef = useRef(null);
 
-  // --- NEW LIVE CHAT STATES ---
+  // Live Chat States
   const [chatMessages, setChatMessages] = useState([]);
   const [chatRoomId, setChatRoomId] = useState("");
 
@@ -69,18 +63,15 @@ export default function App() {
     return () => clearInterval(pollRef.current);
   }, [loadInbox]);
 
-  // --- NEW LIVE CHAT CLEANUP EFFECT ---
   useEffect(() => {
     const handleUnload = () => {
-      // If the user is the owner of the room, delete it when they leave
       const myRoomRef = ref(db, `live_chats/${myId}`);
       remove(myRoomRef);
     };
-
     window.addEventListener("beforeunload", handleUnload);
     return () => {
       window.removeEventListener("beforeunload", handleUnload);
-      handleUnload(); // Clean up when component unmounts
+      handleUnload();
     };
   }, [myId]);
 
@@ -91,51 +82,17 @@ export default function App() {
       .replace(/[^A-Z0-9-]/g, "");
     const content = (overrideMessage ?? message).trim();
     const codeFlag = overrideIsCode ?? isCode;
-
     if (!target || !content) return;
-
     setSending(true);
     setSendStatus(null);
 
-    // try {
-    //   let existing = [];
-    //   try {
-    //     const r = localStorage.getItem(`inbox:${target}`);
-    //     if (r) existing = JSON.parse(r);
-    //   } catch (_) {}
-
-    //   const newMsg = {
-    //     id: Math.random().toString(36).slice(2),
-    //     from: myId,
-    //     content,
-    //     isCode: codeFlag,
-    //     ts: Date.now(),
-    //   };
-
-    //   existing.unshift(newMsg);
-    //   if (existing.length > 50) existing = existing.slice(0, 50);
-
-    //   localStorage.setItem(`inbox:${target}`, JSON.stringify(existing));
-
-    //   setSendStatus("sent");
-    //   if (!overrideToId) {
-    //     setMessage("");
-    //     setToId("");
-    //     setIsCode(false);
-    //   }
-    //   setTimeout(() => setSendStatus(null), 3000);
-    // } catch (e) {
-    //   setSendStatus("error");
-    //   setTimeout(() => setSendStatus(null), 3000);
-    // }
     try {
       const dbRef = ref(db, `inboxes/${target}`);
       const snapshot = await get(dbRef);
-
-      let existing = [];
-      if (snapshot.exists()) {
-        existing = snapshot.val();
-      }
+      let existing = snapshot.exists() ? snapshot.val() : [];
+      const existingArray = Array.isArray(existing)
+        ? existing
+        : Object.values(existing);
 
       const newMsg = {
         id: Math.random().toString(36).slice(2),
@@ -145,17 +102,10 @@ export default function App() {
         ts: Date.now(),
       };
 
-      // Convert from object back to array if needed before unshifting
-      const existingArray = Array.isArray(existing)
-        ? existing
-        : Object.values(existing);
-
       existingArray.unshift(newMsg);
       if (existingArray.length > 50) existingArray.length = 50;
 
-      // Save back to Firebase
       await set(dbRef, existingArray);
-
       setSendStatus("sent");
       if (!overrideToId) {
         setMessage("");
@@ -167,7 +117,6 @@ export default function App() {
       setSendStatus("error");
       setTimeout(() => setSendStatus(null), 3000);
     }
-
     setSending(false);
   };
 
@@ -177,12 +126,10 @@ export default function App() {
       .trim()
       .toUpperCase()
       .replace(/[^A-Z0-9-]/g, "");
-
     if (!file || !target) {
       alert("Please enter a Recipient ID first!");
       return;
     }
-
     try {
       setSending(true);
       const fileRef = storageRef(storage, `images/${Date.now()}_${file.name}`);
@@ -191,11 +138,7 @@ export default function App() {
 
       const dbRef = ref(db, `inboxes/${target}`);
       const dbSnapshot = await get(dbRef);
-      let existing = [];
-      if (dbSnapshot.exists()) {
-        existing = dbSnapshot.val();
-      }
-
+      let existing = dbSnapshot.exists() ? dbSnapshot.val() : [];
       const existingArray = Array.isArray(existing)
         ? existing
         : Object.values(existing);
@@ -233,8 +176,6 @@ export default function App() {
     const updated = inbox.filter((m) => m.id !== id);
     setInbox(updated);
     if (activeMsg?.id === id) setActiveMsg(null);
-
-    // Update Firebase with the deleted list
     const dbRef = ref(db, `inboxes/${myId}`);
     await set(dbRef, updated);
   };
@@ -248,39 +189,27 @@ export default function App() {
     send(recipientId, content, false);
   };
 
-  // --- NEW LIVE CHAT FUNCTIONS ---
   const joinLiveChat = (targetId) => {
-    // 1. Define where this specific chat room lives in the database
     const roomRef = ref(db, `live_chats/${targetId}`);
-
-    // 2. THE MAGIC TRICK: Tell Firebase to delete this room if the creator closes their tab!
     if (targetId === myId) {
       onDisconnect(roomRef).remove();
     }
-
-    // 3. Listen for new messages instantly (Live updating)
     onValue(roomRef, (snapshot) => {
       if (snapshot.exists()) {
         const data = snapshot.val();
-        // Convert the Firebase object into an array and sort by time
         const msgs = Object.values(data).sort((a, b) => a.ts - b.ts);
         setChatMessages(msgs);
       } else {
-        setChatMessages([]); // Room was deleted or is empty
+        setChatMessages([]);
       }
     });
-
     setChatRoomId(targetId);
   };
 
   const sendChatMessage = async (text) => {
     if (!chatRoomId || !text) return;
-
     const roomRef = ref(db, `live_chats/${chatRoomId}`);
-
-    // push() automatically generates a unique ID for the message
     const newMessageRef = push(roomRef);
-
     await set(newMessageRef, {
       sender: myId,
       text: text,
@@ -299,18 +228,23 @@ export default function App() {
         color: "#e2e8f0",
       }}
     >
-      {/* --- NEW CSS FIX: Hides the extra mobile send form on desktop --- */}
       <style>{`
         @media (min-width: 768px) {
           .mobile-only { display: none !important; }
           .desktop-inbox { display: block !important; }
+          .right-panel { display: flex !important; }
         }
         @media (max-width: 767px) {
           .desktop-inbox { display: ${tab === "inbox" ? "block" : "none"}; }
+          .left-panel { display: ${
+            tab === "chat" || tab === "view" ? "none" : "flex"
+          } !important; }
+          .right-panel { display: ${
+            tab === "chat" || tab === "view" ? "flex" : "none"
+          } !important; }
         }
       `}</style>
 
-      {/* Top accent line */}
       <div
         style={{
           position: "fixed",
@@ -328,6 +262,7 @@ export default function App() {
       <div className="grid-layout">
         {/* ── LEFT PANEL ── */}
         <div
+          className="left-panel"
           style={{
             background: "#0a0c12",
             borderRight: "1px solid #141820",
@@ -337,7 +272,6 @@ export default function App() {
             overflow: "hidden",
           }}
         >
-          {/* Header */}
           <div style={{ padding: "20px 20px 0" }}>
             <div
               style={{
@@ -360,7 +294,6 @@ export default function App() {
               </span>
             </div>
 
-            {/* ID Card */}
             <div
               className="glow"
               style={{
@@ -406,12 +339,8 @@ export default function App() {
                   {copied ? "✓ copied" : "copy"}
                 </button>
               </div>
-              <p style={{ fontSize: 10, color: "#3d5060", marginTop: 8 }}>
-                Share this ID to receive messages &amp; code
-              </p>
             </div>
 
-            {/* Tabs */}
             <div
               style={{
                 display: "flex",
@@ -440,7 +369,15 @@ export default function App() {
                 )}
               </button>
 
-              {/* --- ADDED 'mobile-only' CLASS HERE --- */}
+              {/* NEW CHAT TAB */}
+              <button
+                className={`tab ${tab === "chat" ? "active" : ""}`}
+                onClick={() => setTab("chat")}
+                style={{ color: tab === "chat" ? "#00c47a" : "" }}
+              >
+                🔴 live chat
+              </button>
+
               <button
                 className={`tab mobile-only ${tab === "send" ? "active" : ""}`}
                 onClick={() => setTab("send")}
@@ -450,7 +387,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Tab: Inbox (Now dynamically handles desktop vs mobile) */}
           <div
             className="desktop-inbox"
             style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}
@@ -463,7 +399,6 @@ export default function App() {
             />
           </div>
 
-          {/* Tab: Send (mobile only; desktop shows right panel) */}
           {tab === "send" && (
             <div
               className="mobile-only"
@@ -495,43 +430,202 @@ export default function App() {
             overflow: "hidden",
           }}
         >
-          <MessageViewer
-            activeMsg={activeMsg}
-            onDelete={deleteMsg}
-            onReply={handleReply}
-          />
-
-          {/* Send section at bottom */}
-          <div
-            style={{
-              borderTop: "1px solid #141820",
-              padding: "24px 40px",
-              background: "#0a0c12",
-            }}
-          >
-            <p
+          {tab === "chat" ? (
+            // --- LIVE CHAT UI ---
+            <div
               style={{
-                fontSize: 14,
-                color: "#bfcdd9",
-                letterSpacing: "0.12em",
-                marginBottom: 14,
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                background: "#0d0f14",
               }}
             >
-              SEND A DROP
-            </p>
-            <SendForm
-              toId={toId}
-              setToId={setToId}
-              message={message}
-              setMessage={setMessage}
-              isCode={isCode}
-              setIsCode={setIsCode}
-              sending={sending}
-              sendStatus={sendStatus}
-              onSend={() => send()}
-              compact
-            />
-          </div>
+              <div
+                style={{
+                  padding: "24px 40px",
+                  borderBottom: "1px solid #141820",
+                  background: "#0a0c12",
+                }}
+              >
+                <div
+                  style={{ display: "flex", justifyContent: "space-between" }}
+                >
+                  <div>
+                    <p
+                      style={{
+                        fontSize: 14,
+                        color: "#00e5a0",
+                        letterSpacing: "0.12em",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      🔴 LIVE CHAT ROOM
+                    </p>
+                    <p style={{ fontSize: 12, color: "#4a6070", marginTop: 8 }}>
+                      Messages instantly vanish forever when you close the app.
+                    </p>
+                  </div>
+                  {window.innerWidth < 768 && (
+                    <button
+                      className="btn-secondary"
+                      onClick={() => setTab("inbox")}
+                    >
+                      Close
+                    </button>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                  <input
+                    className="input-field"
+                    placeholder="Enter friend's ID to join..."
+                    value={chatRoomId}
+                    onChange={(e) =>
+                      setChatRoomId(e.target.value.toUpperCase())
+                    }
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    className="btn-secondary"
+                    onClick={() => joinLiveChat(chatRoomId)}
+                  >
+                    Join Room
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  overflowY: "auto",
+                  padding: "24px 40px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                }}
+              >
+                {chatMessages.length === 0 ? (
+                  <p
+                    style={{
+                      color: "#3d5060",
+                      textAlign: "center",
+                      marginTop: 40,
+                    }}
+                  >
+                    Room is empty or waiting for connection...
+                  </p>
+                ) : (
+                  chatMessages.map((msg, i) => (
+                    <div
+                      key={i}
+                      style={{
+                        alignSelf:
+                          msg.sender === myId ? "flex-end" : "flex-start",
+                        background:
+                          msg.sender === myId ? "#00e5a020" : "#141820",
+                        padding: "12px 16px",
+                        borderRadius: 8,
+                        maxWidth: "70%",
+                      }}
+                    >
+                      <p
+                        style={{
+                          fontSize: 10,
+                          color: msg.sender === myId ? "#00e5a0" : "#7c9aaa",
+                          marginBottom: 4,
+                        }}
+                      >
+                        {msg.sender === myId ? "you" : msg.sender}
+                      </p>
+                      <p
+                        style={{
+                          fontSize: 14,
+                          color: "#e2e8f0",
+                          wordBreak: "break-word",
+                        }}
+                      >
+                        {msg.text}
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div
+                style={{
+                  padding: "24px 40px",
+                  borderTop: "1px solid #141820",
+                  background: "#0a0c12",
+                  display: "flex",
+                  gap: 10,
+                }}
+              >
+                <input
+                  id="live-chat-input"
+                  className="input-field"
+                  placeholder="Type a live message..."
+                  style={{ flex: 1 }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && e.target.value.trim()) {
+                      sendChatMessage(e.target.value.trim());
+                      e.target.value = "";
+                    }
+                  }}
+                />
+                <button
+                  className="btn-send"
+                  onClick={() => {
+                    const input = document.getElementById("live-chat-input");
+                    if (input.value.trim()) {
+                      sendChatMessage(input.value.trim());
+                      input.value = "";
+                    }
+                  }}
+                >
+                  send live
+                </button>
+              </div>
+            </div>
+          ) : (
+            // --- NORMAL INBOX UI ---
+            <>
+              <MessageViewer
+                activeMsg={activeMsg}
+                onDelete={deleteMsg}
+                onReply={handleReply}
+              />
+              <div
+                style={{
+                  borderTop: "1px solid #141820",
+                  padding: "24px 40px",
+                  background: "#0a0c12",
+                }}
+              >
+                <p
+                  style={{
+                    fontSize: 14,
+                    color: "#bfcdd9",
+                    letterSpacing: "0.12em",
+                    marginBottom: 14,
+                  }}
+                >
+                  SEND A DROP
+                </p>
+                <SendForm
+                  toId={toId}
+                  setToId={setToId}
+                  message={message}
+                  setMessage={setMessage}
+                  isCode={isCode}
+                  setIsCode={setIsCode}
+                  sending={sending}
+                  sendStatus={sendStatus}
+                  onSend={() => send()}
+                  onImageUpload={handleImageUpload}
+                  compact
+                />
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { initializeApp } from "firebase/app";
 import { getDatabase } from "firebase/database";
-import { getStorage } from "firebase/storage"; // <-- Make sure this is here
+import { getStorage } from "firebase/storage";
 
 // Use your actual Firebase configuration keys here
 const firebaseConfig = {
@@ -18,4 +18,4 @@ const app = initializeApp(firebaseConfig);
 
 // Export the database and storage so App.jsx can use them
 export const db = getDatabase(app);
-export const storage = getStorage(app); // <-- This is what Vercel was missing!
+export const storage = getStorage(app);

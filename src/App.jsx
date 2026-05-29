@@ -8,7 +8,18 @@ import { ref, get, set } from "firebase/database";
 import { db } from "./firebase";
 
 export default function App() {
-  const [myId] = useState(() => generateId());
+  const [myId] = useState(() => {
+    // Check if a Drop ID already exists for this tab session
+    const savedId = sessionStorage.getItem("drop_id");
+    if (savedId) {
+      return savedId;
+    }
+
+    // If it's a completely new visit, generate a new one and save it to the session
+    const newId = generateId();
+    sessionStorage.setItem("drop_id", newId);
+    return newId;
+  });
   const [inbox, setInbox] = useState([]);
   const [toId, setToId] = useState("");
   const [message, setMessage] = useState("");

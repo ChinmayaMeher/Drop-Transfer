@@ -4,6 +4,8 @@ import SendForm from "./components/SendForm";
 import Inbox from "./components/Inbox";
 import MessageViewer from "./components/MessageViewer";
 import "./styles/globals.css";
+import { ref, get, set } from "firebase/database";
+import { db } from "./firebase";
 
 export default function App() {
   const [myId] = useState(() => generateId());
@@ -20,10 +22,13 @@ export default function App() {
 
   const loadInbox = useCallback(async () => {
     try {
-      const result = localStorage.getItem(`inbox:${myId}`);
-      if (result) {
-        const msgs = JSON.parse(result);
+      const dbRef = ref(db, `inboxes/${myId}`);
+      const snapshot = await get(dbRef);
+      if (snapshot.exists()) {
+        const msgs = snapshot.val();
         setInbox(msgs.sort((a, b) => b.ts - a.ts));
+      } else {
+        setInbox([]);
       }
     } catch (_) {}
   }, [myId]);
@@ -47,12 +52,45 @@ export default function App() {
     setSending(true);
     setSendStatus(null);
 
+    // try {
+    //   let existing = [];
+    //   try {
+    //     const r = localStorage.getItem(`inbox:${target}`);
+    //     if (r) existing = JSON.parse(r);
+    //   } catch (_) {}
+
+    //   const newMsg = {
+    //     id: Math.random().toString(36).slice(2),
+    //     from: myId,
+    //     content,
+    //     isCode: codeFlag,
+    //     ts: Date.now(),
+    //   };
+
+    //   existing.unshift(newMsg);
+    //   if (existing.length > 50) existing = existing.slice(0, 50);
+
+    //   localStorage.setItem(`inbox:${target}`, JSON.stringify(existing));
+
+    //   setSendStatus("sent");
+    //   if (!overrideToId) {
+    //     setMessage("");
+    //     setToId("");
+    //     setIsCode(false);
+    //   }
+    //   setTimeout(() => setSendStatus(null), 3000);
+    // } catch (e) {
+    //   setSendStatus("error");
+    //   setTimeout(() => setSendStatus(null), 3000);
+    // }
     try {
+      const dbRef = ref(db, `inboxes/${target}`);
+      const snapshot = await get(dbRef);
+
       let existing = [];
-      try {
-        const r = localStorage.getItem(`inbox:${target}`);
-        if (r) existing = JSON.parse(r);
-      } catch (_) {}
+      if (snapshot.exists()) {
+        existing = snapshot.val();
+      }
 
       const newMsg = {
         id: Math.random().toString(36).slice(2),
@@ -65,7 +103,8 @@ export default function App() {
       existing.unshift(newMsg);
       if (existing.length > 50) existing = existing.slice(0, 50);
 
-      localStorage.setItem(`inbox:${target}`, JSON.stringify(existing));
+      // Save back to Firebase
+      await set(dbRef, existing);
 
       setSendStatus("sent");
       if (!overrideToId) {
@@ -93,7 +132,10 @@ export default function App() {
     const updated = inbox.filter((m) => m.id !== id);
     setInbox(updated);
     if (activeMsg?.id === id) setActiveMsg(null);
-    localStorage.setItem(`inbox:${myId}`, JSON.stringify(updated));
+
+    // Update Firebase with the deleted list
+    const dbRef = ref(db, `inboxes/${myId}`);
+    await set(dbRef, updated);
   };
 
   const handleSelectMsg = (msg) => {

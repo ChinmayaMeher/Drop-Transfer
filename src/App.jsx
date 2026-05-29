@@ -9,17 +9,18 @@ import {
   uploadBytes,
   getDownloadURL,
 } from "firebase/storage";
+
 import { storage } from "./firebase";
-// import {
-//   ref,
-//   set,
-//   push,
-//   onValue,
-//   onDisconnect,
-//   remove,
-//   get,
-// } from "firebase/database";
-// import { db } from "./firebase";
+import {
+  ref,
+  set,
+  push,
+  onValue,
+  onDisconnect,
+  remove,
+  get,
+} from "firebase/database";
+import { db } from "./firebase";
 
 export default function App() {
   const [myId] = useState(() => {
@@ -478,6 +479,7 @@ export default function App() {
                 sending={sending}
                 sendStatus={sendStatus}
                 onSend={() => send()}
+                onImageUpload={handleImageUpload}
               />
             </div>
           )}

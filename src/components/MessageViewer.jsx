@@ -72,11 +72,16 @@ export default function MessageViewer({ activeMsg, onDelete, onReply }) {
               marginBottom: 6,
             }}
           >
+            {/* Upgraded tag logic to show a camera icon for images */}
             <span
               className={`tag ${activeMsg.isCode ? "tag-code" : "tag-msg"}`}
               style={{ fontSize: 15 }}
             >
-              {activeMsg.isCode ? "⌨ code" : "◎ message"}
+              {activeMsg.isCode
+                ? "⌨ code"
+                : activeMsg.isImage
+                ? "📷 image"
+                : "◎ message"}
             </span>
             <span style={{ fontSize: 11, color: "#94a4af" }}>
               {new Date(activeMsg.ts).toLocaleString()}
@@ -121,6 +126,38 @@ export default function MessageViewer({ activeMsg, onDelete, onReply }) {
             CODE SNIPPET
           </p>
           <div className="code-view">{activeMsg.content}</div>
+        </div>
+      ) : activeMsg.isImage ? (
+        <div>
+          <p
+            style={{
+              fontSize: 10,
+              color: "#3d5060",
+              letterSpacing: "0.1em",
+              marginBottom: 8,
+            }}
+          >
+            IMAGE DROP
+          </p>
+          <div
+            style={{
+              background: "#0d1115",
+              border: "1px solid #1a2030",
+              borderRadius: 8,
+              padding: "12px",
+              display: "inline-block",
+            }}
+          >
+            <img
+              src={activeMsg.content}
+              alt="Dropped media"
+              style={{
+                maxWidth: "100%",
+                maxHeight: "400px",
+                borderRadius: "4px",
+              }}
+            />
+          </div>
         </div>
       ) : (
         <div

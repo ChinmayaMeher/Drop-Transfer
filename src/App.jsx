@@ -4,7 +4,15 @@ import SendForm from "./components/SendForm";
 import Inbox from "./components/Inbox";
 import MessageViewer from "./components/MessageViewer";
 import "./styles/globals.css";
-import { ref, get, set } from "firebase/database";
+import {
+  ref,
+  set,
+  push,
+  onValue,
+  onDisconnect,
+  remove,
+  get,
+} from "firebase/database";
 import { db } from "./firebase";
 
 export default function App() {
@@ -31,13 +39,17 @@ export default function App() {
   const [tab, setTab] = useState("inbox");
   const pollRef = useRef(null);
 
+  // --- NEW LIVE CHAT STATES ---
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatRoomId, setChatRoomId] = useState("");
+
   const loadInbox = useCallback(async () => {
     try {
       const dbRef = ref(db, `inboxes/${myId}`);
       const snapshot = await get(dbRef);
       if (snapshot.exists()) {
         const msgs = snapshot.val();
-        setInbox(msgs.sort((a, b) => b.ts - a.ts));
+        setInbox(Object.values(msgs).sort((a, b) => b.ts - a.ts));
       } else {
         setInbox([]);
       }
@@ -49,6 +61,21 @@ export default function App() {
     pollRef.current = setInterval(loadInbox, 3000);
     return () => clearInterval(pollRef.current);
   }, [loadInbox]);
+
+  // --- NEW LIVE CHAT CLEANUP EFFECT ---
+  useEffect(() => {
+    const handleUnload = () => {
+      // If the user is the owner of the room, delete it when they leave
+      const myRoomRef = ref(db, `live_chats/${myId}`);
+      remove(myRoomRef);
+    };
+
+    window.addEventListener("beforeunload", handleUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleUnload);
+      handleUnload(); // Clean up when component unmounts
+    };
+  }, [myId]);
 
   const send = async (overrideToId, overrideMessage, overrideIsCode) => {
     const target = (overrideToId ?? toId)
@@ -111,11 +138,16 @@ export default function App() {
         ts: Date.now(),
       };
 
-      existing.unshift(newMsg);
-      if (existing.length > 50) existing = existing.slice(0, 50);
+      // Convert from object back to array if needed before unshifting
+      const existingArray = Array.isArray(existing)
+        ? existing
+        : Object.values(existing);
+
+      existingArray.unshift(newMsg);
+      if (existingArray.length > 50) existingArray.length = 50;
 
       // Save back to Firebase
-      await set(dbRef, existing);
+      await set(dbRef, existingArray);
 
       setSendStatus("sent");
       if (!overrideToId) {
@@ -156,6 +188,46 @@ export default function App() {
 
   const handleReply = (recipientId, content) => {
     send(recipientId, content, false);
+  };
+
+  // --- NEW LIVE CHAT FUNCTIONS ---
+  const joinLiveChat = (targetId) => {
+    // 1. Define where this specific chat room lives in the database
+    const roomRef = ref(db, `live_chats/${targetId}`);
+
+    // 2. THE MAGIC TRICK: Tell Firebase to delete this room if the creator closes their tab!
+    if (targetId === myId) {
+      onDisconnect(roomRef).remove();
+    }
+
+    // 3. Listen for new messages instantly (Live updating)
+    onValue(roomRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.val();
+        // Convert the Firebase object into an array and sort by time
+        const msgs = Object.values(data).sort((a, b) => a.ts - b.ts);
+        setChatMessages(msgs);
+      } else {
+        setChatMessages([]); // Room was deleted or is empty
+      }
+    });
+
+    setChatRoomId(targetId);
+  };
+
+  const sendChatMessage = async (text) => {
+    if (!chatRoomId || !text) return;
+
+    const roomRef = ref(db, `live_chats/${chatRoomId}`);
+
+    // push() automatically generates a unique ID for the message
+    const newMessageRef = push(roomRef);
+
+    await set(newMessageRef, {
+      sender: myId,
+      text: text,
+      ts: Date.now(),
+    });
   };
 
   const unread = inbox.length;

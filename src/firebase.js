@@ -19,3 +19,5 @@ const app = initializeApp(firebaseConfig);
 // Export the database and storage so App.jsx can use them
 export const db = getDatabase(app);
 export const storage = getStorage(app);
+
+// forcing vercel to update

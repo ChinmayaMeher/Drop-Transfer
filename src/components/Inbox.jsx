@@ -1,4 +1,4 @@
-import { timeAgo } from "../utils/helpers";
+import { timeAgo } from "./utils/helpers";
 
 export default function Inbox({ inbox, activeMsg, onSelect, onDelete }) {
   if (inbox.length === 0) {
@@ -21,7 +21,14 @@ export default function Inbox({ inbox, activeMsg, onSelect, onDelete }) {
           className={`msg-card ${activeMsg?.id === msg.id ? "selected" : ""}`}
           onClick={() => onSelect(msg)}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 8,
+            }}
+          >
             <span style={{ fontSize: 11, color: "#4a6070", flex: 1 }}>
               from: <span style={{ color: "#7c9aaa" }}>{msg.from}</span>
             </span>
@@ -50,7 +57,9 @@ export default function Inbox({ inbox, activeMsg, onSelect, onDelete }) {
               marginTop: 8,
             }}
           >
-            <span style={{ fontSize: 10, color: "#2d3748" }}>{timeAgo(msg.ts)}</span>
+            <span style={{ fontSize: 10, color: "#2d3748" }}>
+              {timeAgo(msg.ts)}
+            </span>
             <button
               className="btn-secondary"
               style={{ fontSize: 10, padding: "3px 8px" }}

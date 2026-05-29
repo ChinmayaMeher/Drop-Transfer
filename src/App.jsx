@@ -22,28 +22,52 @@ import {
 import { db } from "./firebase";
 
 export default function App() {
+  // ── Identity ──────────────────────────────────────────────────────────────
+  // FIX: use localStorage so the ID persists across browser sessions,
+  //      not just the current tab (sessionStorage clears on tab close).
   const [myId] = useState(() => {
-    const savedId = sessionStorage.getItem("drop_id");
-    if (savedId) return savedId;
-    const newId = generateId();
-    sessionStorage.setItem("drop_id", newId);
-    return newId;
+    const saved = localStorage.getItem("drop_id");
+    if (saved) return saved;
+    const fresh = generateId();
+    localStorage.setItem("drop_id", fresh);
+    return fresh;
   });
+
+  // ── UI state ──────────────────────────────────────────────────────────────
+  const [tab, setTab] = useState("inbox");
+  const [copied, setCopied] = useState(false);
+
+  // ── Inbox state ───────────────────────────────────────────────────────────
   const [inbox, setInbox] = useState([]);
+  const [activeMsg, setActiveMsg] = useState(null);
+  const pollRef = useRef(null);
+
+  // ── Send-form state ───────────────────────────────────────────────────────
   const [toId, setToId] = useState("");
   const [message, setMessage] = useState("");
   const [isCode, setIsCode] = useState(false);
   const [sending, setSending] = useState(false);
-  const [sendStatus, setSendStatus] = useState(null);
-  const [copied, setCopied] = useState(false);
-  const [activeMsg, setActiveMsg] = useState(null);
-  const [tab, setTab] = useState("inbox");
-  const pollRef = useRef(null);
+  const [sendStatus, setSendStatus] = useState(null); // "sent" | "error" | null
 
-  // Live Chat States
-  const [chatMessages, setChatMessages] = useState([]);
+  // ── Live-chat state ───────────────────────────────────────────────────────
   const [chatRoomId, setChatRoomId] = useState("");
+  const [chatMessages, setChatMessages] = useState([]);
+  // FIX: store the Firebase unsubscribe function so we can clean up the
+  //      onValue listener when the user leaves the chat room.
+  const chatUnsubRef = useRef(null);
 
+  // ── Helpers ───────────────────────────────────────────────────────────────
+  // FIX: use a stable isMobile check with useState instead of calling
+  //      window.innerWidth directly during render (which is unsafe in SSR
+  //      and can cause hydration mismatches).
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // ── Inbox polling ─────────────────────────────────────────────────────────
   const loadInbox = useCallback(async () => {
     try {
       const dbRef = ref(db, `inboxes/${myId}`);
@@ -54,7 +78,9 @@ export default function App() {
       } else {
         setInbox([]);
       }
-    } catch (_) {}
+    } catch (_) {
+      // silently ignore network errors during polling
+    }
   }, [myId]);
 
   useEffect(() => {
@@ -63,6 +89,7 @@ export default function App() {
     return () => clearInterval(pollRef.current);
   }, [loadInbox]);
 
+  // ── Clean up live-chat room on unmount / page close ───────────────────────
   useEffect(() => {
     const handleUnload = () => {
       const myRoomRef = ref(db, `live_chats/${myId}`);
@@ -75,6 +102,7 @@ export default function App() {
     };
   }, [myId]);
 
+  // ── Send a text / code drop ───────────────────────────────────────────────
   const send = async (overrideToId, overrideMessage, overrideIsCode) => {
     const target = (overrideToId ?? toId)
       .trim()
@@ -82,17 +110,19 @@ export default function App() {
       .replace(/[^A-Z0-9-]/g, "");
     const content = (overrideMessage ?? message).trim();
     const codeFlag = overrideIsCode ?? isCode;
+
     if (!target || !content) return;
+
     setSending(true);
     setSendStatus(null);
 
     try {
       const dbRef = ref(db, `inboxes/${target}`);
       const snapshot = await get(dbRef);
-      let existing = snapshot.exists() ? snapshot.val() : [];
-      const existingArray = Array.isArray(existing)
-        ? existing
-        : Object.values(existing);
+      // FIX: default to {} (object) not [] (array) — Firebase always returns
+      //      objects, never plain arrays.
+      const raw = snapshot.exists() ? snapshot.val() : {};
+      const existing = Array.isArray(raw) ? raw : Object.values(raw);
 
       const newMsg = {
         id: Math.random().toString(36).slice(2),
@@ -102,46 +132,52 @@ export default function App() {
         ts: Date.now(),
       };
 
-      existingArray.unshift(newMsg);
-      if (existingArray.length > 50) existingArray.length = 50;
+      existing.unshift(newMsg);
+      if (existing.length > 50) existing.length = 50;
 
-      await set(dbRef, existingArray);
+      await set(dbRef, existing);
       setSendStatus("sent");
+
+      // Only clear the form fields when sending a fresh drop (not a reply)
       if (!overrideToId) {
         setMessage("");
         setToId("");
         setIsCode(false);
       }
-      setTimeout(() => setSendStatus(null), 3000);
-    } catch (e) {
+    } catch (_) {
       setSendStatus("error");
+    } finally {
+      setSending(false);
       setTimeout(() => setSendStatus(null), 3000);
     }
-    setSending(false);
   };
 
+  // ── Send an image drop ────────────────────────────────────────────────────
   const handleImageUpload = async (e) => {
     const file = e.target.files[0];
     const target = toId
       .trim()
       .toUpperCase()
       .replace(/[^A-Z0-9-]/g, "");
+
     if (!file || !target) {
       alert("Please enter a Recipient ID first!");
       return;
     }
+
+    setSending(true);
+    setSendStatus(null);
+
     try {
-      setSending(true);
       const fileRef = storageRef(storage, `images/${Date.now()}_${file.name}`);
-      const snapshot = await uploadBytes(fileRef, file);
-      const downloadURL = await getDownloadURL(snapshot.ref);
+      const uploadSnapshot = await uploadBytes(fileRef, file);
+      const downloadURL = await getDownloadURL(uploadSnapshot.ref);
 
       const dbRef = ref(db, `inboxes/${target}`);
       const dbSnapshot = await get(dbRef);
-      let existing = dbSnapshot.exists() ? dbSnapshot.val() : [];
-      const existingArray = Array.isArray(existing)
-        ? existing
-        : Object.values(existing);
+      // FIX: same as send() — default to {} not [].
+      const raw = dbSnapshot.exists() ? dbSnapshot.val() : {};
+      const existing = Array.isArray(raw) ? raw : Object.values(raw);
 
       const newMsg = {
         id: Math.random().toString(36).slice(2),
@@ -152,19 +188,20 @@ export default function App() {
         ts: Date.now(),
       };
 
-      existingArray.unshift(newMsg);
-      if (existingArray.length > 50) existingArray.length = 50;
+      existing.unshift(newMsg);
+      if (existing.length > 50) existing.length = 50;
 
-      await set(dbRef, existingArray);
+      await set(dbRef, existing);
       setSendStatus("sent");
-      setTimeout(() => setSendStatus(null), 3000);
-    } catch (error) {
+    } catch (_) {
       setSendStatus("error");
     } finally {
       setSending(false);
+      setTimeout(() => setSendStatus(null), 3000);
     }
   };
 
+  // ── Copy own ID to clipboard ──────────────────────────────────────────────
   const copyId = () => {
     navigator.clipboard.writeText(myId).then(() => {
       setCopied(true);
@@ -172,6 +209,7 @@ export default function App() {
     });
   };
 
+  // ── Delete a message ──────────────────────────────────────────────────────
   const deleteMsg = async (id) => {
     const updated = inbox.filter((m) => m.id !== id);
     setInbox(updated);
@@ -180,45 +218,71 @@ export default function App() {
     await set(dbRef, updated);
   };
 
+  // ── Select a message (auto-switch to view tab on mobile) ─────────────────
   const handleSelectMsg = (msg) => {
     setActiveMsg(msg);
-    if (window.innerWidth < 700) setTab("view");
+    // FIX: use the isMobile state instead of calling window.innerWidth inline.
+    if (isMobile) setTab("view");
   };
 
+  // ── Reply to a message ────────────────────────────────────────────────────
   const handleReply = (recipientId, content) => {
     send(recipientId, content, false);
   };
 
+  // ── Live chat ─────────────────────────────────────────────────────────────
   const joinLiveChat = (targetId) => {
+    if (!targetId) return;
+
+    // FIX: unsubscribe from any previous room before subscribing to a new one
+    //      to avoid multiple simultaneous listeners leaking memory.
+    if (chatUnsubRef.current) {
+      chatUnsubRef.current();
+      chatUnsubRef.current = null;
+    }
+
     const roomRef = ref(db, `live_chats/${targetId}`);
+
+    // Register Firebase disconnect cleanup only for our own room
     if (targetId === myId) {
       onDisconnect(roomRef).remove();
     }
-    onValue(roomRef, (snapshot) => {
+
+    const unsubscribe = onValue(roomRef, (snapshot) => {
       if (snapshot.exists()) {
-        const data = snapshot.val();
-        const msgs = Object.values(data).sort((a, b) => a.ts - b.ts);
+        const msgs = Object.values(snapshot.val()).sort((a, b) => a.ts - b.ts);
         setChatMessages(msgs);
       } else {
         setChatMessages([]);
       }
     });
+
+    chatUnsubRef.current = unsubscribe;
     setChatRoomId(targetId);
   };
 
+  // Clean up the chat listener on component unmount
+  useEffect(() => {
+    return () => {
+      if (chatUnsubRef.current) chatUnsubRef.current();
+    };
+  }, []);
+
   const sendChatMessage = async (text) => {
-    if (!chatRoomId || !text) return;
+    if (!chatRoomId || !text.trim()) return;
     const roomRef = ref(db, `live_chats/${chatRoomId}`);
-    const newMessageRef = push(roomRef);
-    await set(newMessageRef, {
+    const newMsgRef = push(roomRef);
+    await set(newMsgRef, {
       sender: myId,
-      text: text,
+      text: text.trim(),
       ts: Date.now(),
     });
   };
 
-  const unread = inbox.length;
+  // ── Derived values ────────────────────────────────────────────────────────
+  const unreadCount = inbox.length;
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div
       style={{
@@ -230,21 +294,26 @@ export default function App() {
     >
       <style>{`
         @media (min-width: 768px) {
-          .mobile-only { display: none !important; }
+          .mobile-only   { display: none !important; }
           .desktop-inbox { display: block !important; }
-          .right-panel { display: flex !important; }
+          .right-panel   { display: flex !important; }
         }
         @media (max-width: 767px) {
           .desktop-inbox { display: ${tab === "inbox" ? "block" : "none"}; }
-          .left-panel { display: ${
-            tab === "chat" || tab === "view" ? "none" : "flex"
-          } !important; }
-          .right-panel { display: ${
-            tab === "chat" || tab === "view" ? "flex" : "none"
-          } !important; }
+          .left-panel {
+            display: ${
+              tab === "chat" || tab === "view" ? "none" : "flex"
+            } !important;
+          }
+          .right-panel {
+            display: ${
+              tab === "chat" || tab === "view" ? "flex" : "none"
+            } !important;
+          }
         }
       `}</style>
 
+      {/* Top accent line */}
       <div
         style={{
           position: "fixed",
@@ -272,6 +341,7 @@ export default function App() {
             overflow: "hidden",
           }}
         >
+          {/* Header */}
           <div style={{ padding: "20px 20px 0" }}>
             <div
               style={{
@@ -294,6 +364,7 @@ export default function App() {
               </span>
             </div>
 
+            {/* Your ID card */}
             <div
               className="glow"
               style={{
@@ -341,6 +412,7 @@ export default function App() {
               </div>
             </div>
 
+            {/* Tab bar */}
             <div
               style={{
                 display: "flex",
@@ -353,7 +425,7 @@ export default function App() {
                 onClick={() => setTab("inbox")}
               >
                 inbox{" "}
-                {unread > 0 && (
+                {unreadCount > 0 && (
                   <span
                     style={{
                       background: "#00e5a020",
@@ -364,12 +436,11 @@ export default function App() {
                       marginLeft: 4,
                     }}
                   >
-                    {unread}
+                    {unreadCount}
                   </span>
                 )}
               </button>
 
-              {/* NEW CHAT TAB */}
               <button
                 className={`tab ${tab === "chat" ? "active" : ""}`}
                 onClick={() => setTab("chat")}
@@ -387,6 +458,7 @@ export default function App() {
             </div>
           </div>
 
+          {/* Inbox list */}
           <div
             className="desktop-inbox"
             style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}
@@ -399,6 +471,7 @@ export default function App() {
             />
           </div>
 
+          {/* Mobile send form */}
           {tab === "send" && (
             <div
               className="mobile-only"
@@ -431,7 +504,7 @@ export default function App() {
           }}
         >
           {tab === "chat" ? (
-            // --- LIVE CHAT UI ---
+            /* ── LIVE CHAT UI ── */
             <div
               style={{
                 flex: 1,
@@ -440,6 +513,7 @@ export default function App() {
                 background: "#0d0f14",
               }}
             >
+              {/* Chat header / room join */}
               <div
                 style={{
                   padding: "24px 40px",
@@ -462,10 +536,11 @@ export default function App() {
                       🔴 LIVE CHAT ROOM
                     </p>
                     <p style={{ fontSize: 12, color: "#4a6070", marginTop: 8 }}>
-                      Messages instantly vanish forever when you close the app.
+                      Messages vanish forever when you close the app.
                     </p>
                   </div>
-                  {window.innerWidth < 768 && (
+                  {/* FIX: use isMobile state instead of window.innerWidth inline */}
+                  {isMobile && (
                     <button
                       className="btn-secondary"
                       onClick={() => setTab("inbox")}
@@ -474,6 +549,7 @@ export default function App() {
                     </button>
                   )}
                 </div>
+
                 <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
                   <input
                     className="input-field"
@@ -493,6 +569,7 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Chat message list */}
               <div
                 style={{
                   flex: 1,
@@ -550,6 +627,7 @@ export default function App() {
                 )}
               </div>
 
+              {/* Chat input */}
               <div
                 style={{
                   padding: "24px 40px",
@@ -575,7 +653,7 @@ export default function App() {
                   className="btn-send"
                   onClick={() => {
                     const input = document.getElementById("live-chat-input");
-                    if (input.value.trim()) {
+                    if (input?.value.trim()) {
                       sendChatMessage(input.value.trim());
                       input.value = "";
                     }
@@ -586,13 +664,15 @@ export default function App() {
               </div>
             </div>
           ) : (
-            // --- NORMAL INBOX UI ---
+            /* ── INBOX / MESSAGE VIEWER UI ── */
             <>
               <MessageViewer
                 activeMsg={activeMsg}
                 onDelete={deleteMsg}
                 onReply={handleReply}
               />
+
+              {/* Desktop send form at bottom */}
               <div
                 style={{
                   borderTop: "1px solid #141820",

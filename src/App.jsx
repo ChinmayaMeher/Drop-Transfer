@@ -5,15 +5,21 @@ import Inbox from "./components/Inbox";
 import MessageViewer from "./components/MessageViewer";
 import "./styles/globals.css";
 import {
-  ref,
-  set,
-  push,
-  onValue,
-  onDisconnect,
-  remove,
-  get,
-} from "firebase/database";
-import { db } from "./firebase";
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL,
+} from "firebase/storage";
+import { storage } from "./firebase";
+// import {
+//   ref,
+//   set,
+//   push,
+//   onValue,
+//   onDisconnect,
+//   remove,
+//   get,
+// } from "firebase/database";
+// import { db } from "./firebase";
 
 export default function App() {
   const [myId] = useState(() => {
@@ -162,6 +168,57 @@ export default function App() {
     }
 
     setSending(false);
+  };
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    const target = toId
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9-]/g, "");
+
+    if (!file || !target) {
+      alert("Please enter a Recipient ID first!");
+      return;
+    }
+
+    try {
+      setSending(true);
+      const fileRef = storageRef(storage, `images/${Date.now()}_${file.name}`);
+      const snapshot = await uploadBytes(fileRef, file);
+      const downloadURL = await getDownloadURL(snapshot.ref);
+
+      const dbRef = ref(db, `inboxes/${target}`);
+      const dbSnapshot = await get(dbRef);
+      let existing = [];
+      if (dbSnapshot.exists()) {
+        existing = dbSnapshot.val();
+      }
+
+      const existingArray = Array.isArray(existing)
+        ? existing
+        : Object.values(existing);
+
+      const newMsg = {
+        id: Math.random().toString(36).slice(2),
+        from: myId,
+        content: downloadURL,
+        isCode: false,
+        isImage: true,
+        ts: Date.now(),
+      };
+
+      existingArray.unshift(newMsg);
+      if (existingArray.length > 50) existingArray.length = 50;
+
+      await set(dbRef, existingArray);
+      setSendStatus("sent");
+      setTimeout(() => setSendStatus(null), 3000);
+    } catch (error) {
+      setSendStatus("error");
+    } finally {
+      setSending(false);
+    }
   };
 
   const copyId = () => {

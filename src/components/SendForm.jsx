@@ -8,6 +8,7 @@ export default function SendForm({
   sending,
   sendStatus,
   onSend,
+  onImageUpload,
   compact,
 }) {
   return (
@@ -70,6 +71,39 @@ export default function SendForm({
         >
           {sending ? "sending…" : "send drop →"}
         </button>
+
+        {/* 📷 IMAGE UPLOAD BUTTON ADDED HERE */}
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            marginLeft: "15px",
+          }}
+        >
+          <input
+            type="file"
+            accept="image/*"
+            onChange={onImageUpload}
+            id="image-upload"
+            style={{ display: "none" }}
+          />
+          <label
+            htmlFor="image-upload"
+            style={{
+              cursor: "pointer",
+              color: "#00e5a0",
+              fontSize: "14px",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              opacity: sending ? 0.5 : 1,
+              pointerEvents: sending ? "none" : "auto",
+            }}
+          >
+            📷 Send Image
+          </label>
+        </div>
+
         {sendStatus === "sent" && (
           <span className="status-sent">✓ delivered</span>
         )}

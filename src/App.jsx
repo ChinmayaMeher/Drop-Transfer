@@ -241,6 +241,17 @@ export default function App() {
         color: "#e2e8f0",
       }}
     >
+      {/* --- NEW CSS FIX: Hides the extra mobile send form on desktop --- */}
+      <style>{`
+        @media (min-width: 768px) {
+          .mobile-only { display: none !important; }
+          .desktop-inbox { display: block !important; }
+        }
+        @media (max-width: 767px) {
+          .desktop-inbox { display: ${tab === "inbox" ? "block" : "none"}; }
+        }
+      `}</style>
+
       {/* Top accent line */}
       <div
         style={{
@@ -370,8 +381,10 @@ export default function App() {
                   </span>
                 )}
               </button>
+
+              {/* --- ADDED 'mobile-only' CLASS HERE --- */}
               <button
-                className={`tab ${tab === "send" ? "active" : ""}`}
+                className={`tab mobile-only ${tab === "send" ? "active" : ""}`}
                 onClick={() => setTab("send")}
               >
                 send
@@ -379,21 +392,25 @@ export default function App() {
             </div>
           </div>
 
-          {/* Tab: Inbox */}
-          {tab === "inbox" && (
-            <div style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}>
-              <Inbox
-                inbox={inbox}
-                activeMsg={activeMsg}
-                onSelect={handleSelectMsg}
-                onDelete={deleteMsg}
-              />
-            </div>
-          )}
+          {/* Tab: Inbox (Now dynamically handles desktop vs mobile) */}
+          <div
+            className="desktop-inbox"
+            style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}
+          >
+            <Inbox
+              inbox={inbox}
+              activeMsg={activeMsg}
+              onSelect={handleSelectMsg}
+              onDelete={deleteMsg}
+            />
+          </div>
 
           {/* Tab: Send (mobile only; desktop shows right panel) */}
           {tab === "send" && (
-            <div style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}>
+            <div
+              className="mobile-only"
+              style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}
+            >
               <SendForm
                 toId={toId}
                 setToId={setToId}

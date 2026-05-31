@@ -38,7 +38,7 @@ body {
   letter-spacing: 0.05em;
 }
 .btn-send:hover:not(:disabled) {
-  background: #00fdb4;
+  background: #03d297;
   transform: translateY(-1px);
 }
 .btn-send:disabled {
@@ -49,7 +49,7 @@ body {
 .btn-secondary {
   background: transparent;
   border: 1px solid #2d3748;
-  color: #94a3b8;
+  color: #aabbd1;
   cursor: pointer;
   font-family: inherit;
   font-size: 12px;

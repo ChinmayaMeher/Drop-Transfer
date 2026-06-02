@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { generateId } from "./utils/helpers";
+import { generateId, timeAgo } from "./utils/helpers";
 import SendForm from "./components/SendForm";
 import Inbox from "./components/Inbox";
 import MessageViewer from "./components/MessageViewer";
+import EmojiPicker from "./components/EmojiPicker";
 import "./styles/globals.css";
 import {
   ref as storageRef,
@@ -22,9 +23,7 @@ import {
 import { db } from "./firebase";
 
 export default function App() {
-  // ── Identity ──────────────────────────────────────────────────────────────
-  // FIX: use localStorage so the ID persists across browser sessions,
-  //      not just the current tab (sessionStorage clears on tab close).
+  // ── Identity & Persistence ───────────────────────────────────────────────
   const [myId] = useState(() => {
     const saved = localStorage.getItem("drop_id");
     if (saved) return saved;
@@ -33,33 +32,43 @@ export default function App() {
     return fresh;
   });
 
-  // ── UI state ──────────────────────────────────────────────────────────────
-  const [tab, setTab] = useState("inbox");
+  // ── Main Dashboard Tabs ──────────────────────────────────────────────────
+  // tabs: "chats" | "inbox" | "send"
+  const [tab, setTab] = useState("chats");
   const [copied, setCopied] = useState(false);
 
-  // ── Inbox state ───────────────────────────────────────────────────────────
+  // ── Legacy Inbox Drops State ─────────────────────────────────────────────
   const [inbox, setInbox] = useState([]);
   const [activeMsg, setActiveMsg] = useState(null);
   const pollRef = useRef(null);
 
-  // ── Send-form state ───────────────────────────────────────────────────────
+  // ── Legacy Send Drop Form State ──────────────────────────────────────────
   const [toId, setToId] = useState("");
   const [message, setMessage] = useState("");
   const [isCode, setIsCode] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendStatus, setSendStatus] = useState(null); // "sent" | "error" | null
 
-  // ── Live-chat state ───────────────────────────────────────────────────────
-  const [chatRoomId, setChatRoomId] = useState("");
+  // ── WhatsApp 1-to-1 Chat State ────────────────────────────────────────────
+  const [activeFriendId, setActiveFriendId] = useState(null);
+  const [activeChats, setActiveChats] = useState([]);
   const [chatMessages, setChatMessages] = useState([]);
-  // FIX: store the Firebase unsubscribe function so we can clean up the
-  //      onValue listener when the user leaves the chat room.
-  const chatUnsubRef = useRef(null);
+  const [chatInput, setChatInput] = useState("");
+  const [isCodeChat, setIsCodeChat] = useState(false);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [friendOnline, setFriendOnline] = useState(false);
+  const [friendLastSeen, setFriendLastSeen] = useState(null);
+  const [searchFriendId, setSearchFriendId] = useState("");
+  const [activeReactionMenu, setActiveReactionMenu] = useState(null);
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
-  // FIX: use a stable isMobile check with useState instead of calling
-  //      window.innerWidth directly during render (which is unsafe in SSR
-  //      and can cause hydration mismatches).
+  // Unsubscribe refs to avoid memory leaks
+  const chatUnsubRef = useRef(null);
+  const onlineUnsubRef = useRef(null);
+  const lastSeenUnsubRef = useRef(null);
+  const chatEndRef = useRef(null);
+
+  // ── Device Responsiveness ─────────────────────────────────────────────────
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768);
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
@@ -67,7 +76,64 @@ export default function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // ── Inbox polling ─────────────────────────────────────────────────────────
+  // ── Real-time Online/Presence Sync ─────────────────────────────────────────
+  useEffect(() => {
+    if (!myId) return;
+    const myOnlineRef = ref(db, `users/${myId}/online`);
+    const myLastSeenRef = ref(db, `users/${myId}/lastSeen`);
+
+    set(myOnlineRef, true);
+    onDisconnect(myOnlineRef).set(false);
+    onDisconnect(myLastSeenRef).set(Date.now());
+
+    return () => {
+      set(myOnlineRef, false);
+      set(myLastSeenRef, Date.now());
+    };
+  }, [myId]);
+
+  // Listen to active friend online status
+  useEffect(() => {
+    if (onlineUnsubRef.current) onlineUnsubRef.current();
+    if (lastSeenUnsubRef.current) lastSeenUnsubRef.current();
+
+    if (!activeFriendId) {
+      setFriendOnline(false);
+      setFriendLastSeen(null);
+      return;
+    }
+
+    const friendOnlineRef = ref(db, `users/${activeFriendId}/online`);
+    const friendLastSeenRef = ref(db, `users/${activeFriendId}/lastSeen`);
+
+    onlineUnsubRef.current = onValue(friendOnlineRef, (snap) => {
+      setFriendOnline(snap.exists() ? snap.val() : false);
+    });
+
+    lastSeenUnsubRef.current = onValue(friendLastSeenRef, (snap) => {
+      setFriendLastSeen(snap.exists() ? snap.val() : null);
+    });
+
+    return () => {
+      if (onlineUnsubRef.current) onlineUnsubRef.current();
+      if (lastSeenUnsubRef.current) lastSeenUnsubRef.current();
+    };
+  }, [activeFriendId]);
+
+  // ── Load User Chats List (Sidebar threads) ──────────────────────────────
+  useEffect(() => {
+    const userChatsRef = ref(db, `users/${myId}/chats`);
+    return onValue(userChatsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const chats = Object.values(snapshot.val()).sort((a, b) => b.ts - a.ts);
+        setActiveChats(chats);
+      } else {
+        setActiveChats([]);
+      }
+    });
+  }, [myId]);
+
+  // ── Load Inbox Drops Polling ──────────────────────────────────────────────
   const loadInbox = useCallback(async () => {
     try {
       const dbRef = ref(db, `inboxes/${myId}`);
@@ -89,20 +155,51 @@ export default function App() {
     return () => clearInterval(pollRef.current);
   }, [loadInbox]);
 
-  // ── Clean up live-chat room on unmount / page close ───────────────────────
+  // ── Listen to Active 1-to-1 Chat Messages ────────────────────────────────
   useEffect(() => {
-    const handleUnload = () => {
-      const myRoomRef = ref(db, `live_chats/${myId}`);
-      remove(myRoomRef);
-    };
-    window.addEventListener("beforeunload", handleUnload);
-    return () => {
-      window.removeEventListener("beforeunload", handleUnload);
-      handleUnload();
-    };
-  }, [myId]);
+    if (chatUnsubRef.current) {
+      chatUnsubRef.current();
+      chatUnsubRef.current = null;
+    }
 
-  // ── Send a text / code drop ───────────────────────────────────────────────
+    if (!activeFriendId) {
+      setChatMessages([]);
+      return;
+    }
+
+    const roomID = [myId, activeFriendId].sort().join("_");
+    const roomRef = ref(db, `chats/${roomID}`);
+
+    chatUnsubRef.current = onValue(roomRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const msgs = Object.values(snapshot.val()).sort((a, b) => a.ts - b.ts);
+        setChatMessages(msgs);
+      } else {
+        setChatMessages([]);
+      }
+    });
+
+    // Mark current chat as read in user chats list
+    set(ref(db, `users/${myId}/chats/${activeFriendId}/unread`), false);
+
+    return () => {
+      if (chatUnsubRef.current) chatUnsubRef.current();
+    };
+  }, [myId, activeFriendId]);
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  // Close emoji picker on outside click
+  useEffect(() => {
+    const clickHandler = () => setShowEmojiPicker(false);
+    window.addEventListener("click", clickHandler);
+    return () => window.removeEventListener("click", clickHandler);
+  }, []);
+
+  // ── Send Drop Function (Direct Inbox) ────────────────────────────────────
   const send = async (overrideToId, overrideMessage, overrideIsCode) => {
     const target = (overrideToId ?? toId)
       .trim()
@@ -119,8 +216,6 @@ export default function App() {
     try {
       const dbRef = ref(db, `inboxes/${target}`);
       const snapshot = await get(dbRef);
-      // FIX: default to {} (object) not [] (array) — Firebase always returns
-      //      objects, never plain arrays.
       const raw = snapshot.exists() ? snapshot.val() : {};
       const existing = Array.isArray(raw) ? raw : Object.values(raw);
 
@@ -138,7 +233,6 @@ export default function App() {
       await set(dbRef, existing);
       setSendStatus("sent");
 
-      // Only clear the form fields when sending a fresh drop (not a reply)
       if (!overrideToId) {
         setMessage("");
         setToId("");
@@ -152,7 +246,7 @@ export default function App() {
     }
   };
 
-  // ── Send an image drop ────────────────────────────────────────────────────
+  // ── Send Drop Image (Direct Inbox) ───────────────────────────────────────
   const handleImageUpload = async (e) => {
     const file = e.target.files[0];
     const target = toId
@@ -175,7 +269,6 @@ export default function App() {
 
       const dbRef = ref(db, `inboxes/${target}`);
       const dbSnapshot = await get(dbRef);
-      // FIX: same as send() — default to {} not [].
       const raw = dbSnapshot.exists() ? dbSnapshot.val() : {};
       const existing = Array.isArray(raw) ? raw : Object.values(raw);
 
@@ -201,7 +294,108 @@ export default function App() {
     }
   };
 
-  // ── Copy own ID to clipboard ──────────────────────────────────────────────
+  // ── Live Chat Actions (WhatsApp Style) ────────────────────────────────────
+  const sendChatMessage = async (text, isImg = false, isCd = false) => {
+    const content = text.trim();
+    if (!activeFriendId || !content) return;
+
+    const roomID = [myId, activeFriendId].sort().join("_");
+    const roomRef = ref(db, `chats/${roomID}`);
+    const newMsgRef = push(roomRef);
+
+    const newMsg = {
+      id: newMsgRef.key,
+      sender: myId,
+      text: content,
+      ts: Date.now(),
+      isImage: isImg,
+      isCode: isCd,
+    };
+
+    if (replyingTo) {
+      newMsg.replyTo = replyingTo;
+      setReplyingTo(null);
+    }
+
+    // Write to Room Messages
+    await set(newMsgRef, newMsg);
+
+    // Update Chats List Metadata for Me
+    const chatMetaMe = {
+      friendId: activeFriendId,
+      lastMessage: isImg ? "📷 Image" : isCd ? "⌨ Code Snippet" : content,
+      ts: Date.now(),
+      unread: false,
+    };
+    await set(ref(db, `users/${myId}/chats/${activeFriendId}`), chatMetaMe);
+
+    // Update Chats List Metadata for Friend
+    const chatMetaFriend = {
+      friendId: myId,
+      lastMessage: isImg ? "📷 Image" : isCd ? "⌨ Code Snippet" : content,
+      ts: Date.now(),
+      unread: true,
+    };
+    await set(ref(db, `users/${activeFriendId}/chats/${myId}`), chatMetaFriend);
+
+    setChatInput("");
+    setIsCodeChat(false);
+  };
+
+  const handleChatImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !activeFriendId) return;
+
+    setSending(true);
+    try {
+      const fileRef = storageRef(storage, `chat_images/${Date.now()}_${file.name}`);
+      const uploadSnapshot = await uploadBytes(fileRef, file);
+      const downloadURL = await getDownloadURL(uploadSnapshot.ref);
+
+      await sendChatMessage(downloadURL, true, false);
+    } catch (_) {
+      alert("Failed to send image.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const reactToMessage = async (msgId, emoji) => {
+    if (!activeFriendId) return;
+    const roomID = [myId, activeFriendId].sort().join("_");
+    const reactionRef = ref(db, `chats/${roomID}/${msgId}/reactions/${myId}`);
+
+    const snap = await get(reactionRef);
+    if (snap.exists() && snap.val() === emoji) {
+      await remove(reactionRef);
+    } else {
+      await set(reactionRef, emoji);
+    }
+    setActiveReactionMenu(null);
+  };
+
+  const startNewChat = () => {
+    const cleanId = searchFriendId
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9-]/g, "");
+    if (!cleanId || cleanId === myId) {
+      alert("Invalid Recipient ID");
+      return;
+    }
+
+    // Set initial thread metadata to show in sidebar
+    const chatMeta = {
+      friendId: cleanId,
+      lastMessage: "No messages yet",
+      ts: Date.now(),
+      unread: false,
+    };
+    set(ref(db, `users/${myId}/chats/${cleanId}`), chatMeta);
+    setActiveFriendId(cleanId);
+    setSearchFriendId("");
+  };
+
   const copyId = () => {
     navigator.clipboard.writeText(myId).then(() => {
       setCopied(true);
@@ -209,7 +403,6 @@ export default function App() {
     });
   };
 
-  // ── Delete a message ──────────────────────────────────────────────────────
   const deleteMsg = async (id) => {
     const updated = inbox.filter((m) => m.id !== id);
     setInbox(updated);
@@ -218,265 +411,236 @@ export default function App() {
     await set(dbRef, updated);
   };
 
-  // ── Select a message (auto-switch to view tab on mobile) ─────────────────
   const handleSelectMsg = (msg) => {
     setActiveMsg(msg);
-    // FIX: use the isMobile state instead of calling window.innerWidth inline.
-    if (isMobile) setTab("view");
+    if (isMobile) setTab("inbox");
   };
 
-  // ── Reply to a message ────────────────────────────────────────────────────
   const handleReply = (recipientId, content) => {
     send(recipientId, content, false);
   };
 
-  // ── Live chat ─────────────────────────────────────────────────────────────
-  const joinLiveChat = (targetId) => {
-    if (!targetId) return;
-
-    // FIX: unsubscribe from any previous room before subscribing to a new one
-    //      to avoid multiple simultaneous listeners leaking memory.
-    if (chatUnsubRef.current) {
-      chatUnsubRef.current();
-      chatUnsubRef.current = null;
-    }
-
-    const roomRef = ref(db, `live_chats/${targetId}`);
-
-    // Register Firebase disconnect cleanup only for our own room
-    if (targetId === myId) {
-      onDisconnect(roomRef).remove();
-    }
-
-    const unsubscribe = onValue(roomRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const msgs = Object.values(snapshot.val()).sort((a, b) => a.ts - b.ts);
-        setChatMessages(msgs);
-      } else {
-        setChatMessages([]);
-      }
-    });
-
-    chatUnsubRef.current = unsubscribe;
-    setChatRoomId(targetId);
+  // Helper: Format relative timestamp
+  const getFormatTime = (ts) => {
+    const date = new Date(ts);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
-
-  // Clean up the chat listener on component unmount
-  useEffect(() => {
-    return () => {
-      if (chatUnsubRef.current) chatUnsubRef.current();
-    };
-  }, []);
-
-  const sendChatMessage = async (text) => {
-    if (!chatRoomId || !text.trim()) return;
-    const roomRef = ref(db, `live_chats/${chatRoomId}`);
-    const newMsgRef = push(roomRef);
-    await set(newMsgRef, {
-      sender: myId,
-      text: text.trim(),
-      ts: Date.now(),
-    });
-  };
-
-  // ── Derived values ────────────────────────────────────────────────────────
-  const unreadCount = inbox.length;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div
-      style={{
-        fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
-        background: "#0d0f14",
-        minHeight: "100vh",
-        color: "#e2e8f0",
-      }}
-    >
-      <style>{`
-        @media (min-width: 768px) {
-          .mobile-only   { display: none !important; }
-          .desktop-inbox { display: block !important; }
-          .right-panel   { display: flex !important; }
-        }
-        @media (max-width: 767px) {
-          .desktop-inbox { display: ${tab === "inbox" ? "block" : "none"}; }
-          .left-panel {
-            display: ${
-              tab === "chat" || tab === "view" ? "none" : "flex"
-            } !important;
-          }
-          .right-panel {
-            display: ${
-              tab === "chat" || tab === "view" ? "flex" : "none"
-            } !important;
-          }
-        }
-      `}</style>
-
-      {/* Top accent line */}
+    <div className="grid-layout">
+      {/* ── LEFT PANEL (Sidebar) ── */}
       <div
         style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          height: "1px",
-          background:
-            "linear-gradient(90deg, transparent, #00e5a040, #00e5a0, #00e5a040, transparent)",
-          pointerEvents: "none",
-          zIndex: 100,
+          background: "var(--wa-sidebar)",
+          borderRight: "1px solid var(--wa-border)",
+          display: isMobile && (activeFriendId || (tab === "inbox" && activeMsg)) ? "none" : "flex",
+          flexDirection: "column",
+          height: "100vh",
+          overflow: "hidden",
         }}
-      />
-
-      <div className="grid-layout">
-        {/* ── LEFT PANEL ── */}
-        <div
-          className="left-panel"
-          style={{
-            background: "#0a0c12",
-            borderRight: "1px solid #141820",
-            display: "flex",
-            flexDirection: "column",
-            height: "100vh",
-            overflow: "hidden",
-          }}
-        >
-          {/* Header */}
-          <div style={{ padding: "20px 20px 0" }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginBottom: 20,
-              }}
-            >
+      >
+        {/* Profile / App Header */}
+        <div style={{ padding: "16px", background: "var(--wa-header)", borderBottom: "1px solid var(--wa-border)" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              marginBottom: "14px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span className="pulse-dot" />
               <span
                 style={{
-                  fontSize: 25,
-                  color: "#00e5a0",
-                  letterSpacing: "0.1em",
+                  fontSize: "18px",
+                  color: "var(--wa-green)",
                   fontWeight: 700,
+                  letterSpacing: "0.05em",
                 }}
               >
                 DROP.TRANSFER
               </span>
             </div>
+          </div>
 
-            {/* Your ID card */}
-            <div
-              className="glow"
+          {/* Bold Green ID card with Copy action */}
+          <div
+            style={{
+              background: "#182229",
+              border: "1px solid var(--wa-green)",
+              borderRadius: "8px",
+              padding: "10px 12px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              boxShadow: "0 2px 8px rgba(0, 168, 132, 0.15)",
+            }}
+          >
+            <div>
+              <p style={{ fontSize: "10px", color: "var(--wa-text-muted)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: "2px" }}>
+                My Drop ID
+              </p>
+              <p style={{ fontSize: "18px", fontWeight: "bold", color: "var(--wa-green)", letterSpacing: "0.05em", margin: 0 }}>
+                {myId}
+              </p>
+            </div>
+            <button
+              onClick={copyId}
               style={{
-                background: "#0d1520",
-                border: "1px solid #00e5a030",
-                borderRadius: 10,
-                padding: "16px",
-                marginBottom: 20,
+                fontSize: "11px",
+                padding: "6px 12px",
+                borderRadius: "20px",
+                background: "var(--wa-green)",
+                color: "#0b141a",
+                fontWeight: "600",
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+                cursor: "pointer",
+                border: "none",
+                transition: "background 0.2s",
               }}
+              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = "#00c49a")}
+              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = "var(--wa-green)")}
             >
-              <p
+              {copied ? "✓ Copied" : "📋 Copy ID"}
+            </button>
+          </div>
+        </div>
+
+        {/* Tab Selector */}
+        <div
+          style={{
+            display: "flex",
+            background: "var(--wa-sidebar)",
+            borderBottom: "1px solid var(--wa-border)",
+          }}
+        >
+          <button
+            className={`tab ${tab === "chats" ? "active" : ""}`}
+            onClick={() => setTab("chats")}
+            style={{ flex: 1 }}
+          >
+            💬 Chats
+          </button>
+          <button
+            className={`tab ${tab === "inbox" ? "active" : ""}`}
+            onClick={() => setTab("inbox")}
+            style={{ flex: 1 }}
+          >
+            📥 Inbox ({inbox.length})
+          </button>
+          <button
+            className={`tab ${tab === "send" ? "active" : ""}`}
+            onClick={() => setTab("send")}
+            style={{ flex: 1 }}
+          >
+            📤 Send Drop
+          </button>
+        </div>
+
+        {/* Main Sidebar Contents */}
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {tab === "chats" && (
+            <>
+              {/* Start new chat search box */}
+              <div
                 style={{
-                  fontSize: 10,
-                  color: "#4a6070",
-                  letterSpacing: "0.12em",
-                  marginBottom: 8,
-                  fontWeight: 500,
+                  padding: "12px 16px",
+                  borderBottom: "1px solid var(--wa-border)",
+                  display: "flex",
+                  gap: "8px",
+                  background: "var(--wa-sidebar)",
                 }}
               >
-                YOUR DROP ID
-              </p>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span
-                  style={{
-                    fontSize: 22,
-                    fontWeight: 600,
-                    letterSpacing: "0.12em",
-                    color: "#00e5a0",
-                    flex: 1,
-                  }}
-                >
-                  {myId}
-                </span>
+                <input
+                  className="input-field"
+                  placeholder="Enter Friend's ID..."
+                  value={searchFriendId}
+                  onChange={(e) => setSearchFriendId(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && startNewChat()}
+                />
                 <button
-                  className="btn-secondary"
-                  onClick={copyId}
-                  style={{
-                    fontSize: 11,
-                    padding: "5px 12px",
-                    whiteSpace: "nowrap",
-                  }}
+                  className="btn-send"
+                  onClick={startNewChat}
+                  style={{ padding: "8px 14px", fontSize: "12px" }}
                 >
-                  {copied ? "✓ copied" : "copy"}
+                  Chat
                 </button>
               </div>
-            </div>
 
-            {/* Tab bar */}
-            <div
-              style={{
-                display: "flex",
-                borderBottom: "1px solid #141820",
-                marginBottom: 16,
-              }}
-            >
-              <button
-                className={`tab ${tab === "inbox" ? "active" : ""}`}
-                onClick={() => setTab("inbox")}
-              >
-                inbox{" "}
-                {unreadCount > 0 && (
-                  <span
-                    style={{
-                      background: "#00e5a020",
-                      color: "#00e5a0",
-                      fontSize: 10,
-                      padding: "1px 6px",
-                      borderRadius: 10,
-                      marginLeft: 4,
+              {/* Chat threads list */}
+              {activeChats.length === 0 ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "40px 20px",
+                    color: "var(--wa-text-muted)",
+                  }}
+                >
+                  <p style={{ fontSize: "14px", marginBottom: "6px" }}>No active chats</p>
+                  <p style={{ fontSize: "12px", opacity: 0.7 }}>
+                    Enter a Friend's ID above to start messaging in real-time.
+                  </p>
+                </div>
+              ) : (
+                activeChats.map((chat) => (
+                  <div
+                    key={chat.friendId}
+                    className={`chat-list-item ${
+                      activeFriendId === chat.friendId ? "active" : ""
+                    }`}
+                    onClick={() => {
+                      setActiveFriendId(chat.friendId);
+                      setActiveMsg(null);
                     }}
                   >
-                    {unreadCount}
-                  </span>
-                )}
-              </button>
+                    <div className="chat-avatar">
+                      {chat.friendId.slice(0, 2)}
+                    </div>
+                    <div className="chat-item-details">
+                      <div className="chat-item-header">
+                        <span className="chat-item-name">{chat.friendId}</span>
+                        <span className="chat-item-time">
+                          {timeAgo(chat.ts)}
+                        </span>
+                      </div>
+                      <div className="chat-item-body">
+                        <span className="chat-item-msg">{chat.lastMessage}</span>
+                        {chat.unread && <span className="chat-item-badge">!</span>}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </>
+          )}
 
-              <button
-                className={`tab ${tab === "chat" ? "active" : ""}`}
-                onClick={() => setTab("chat")}
-                style={{ color: tab === "chat" ? "#00c47a" : "" }}
-              >
-                🔴 live chat
-              </button>
-
-              <button
-                className={`tab mobile-only ${tab === "send" ? "active" : ""}`}
-                onClick={() => setTab("send")}
-              >
-                send
-              </button>
+          {tab === "inbox" && (
+            <div style={{ padding: "12px 16px" }}>
+              <Inbox
+                inbox={inbox}
+                activeMsg={activeMsg}
+                onSelect={handleSelectMsg}
+                onDelete={deleteMsg}
+              />
             </div>
-          </div>
+          )}
 
-          {/* Inbox list */}
-          <div
-            className="desktop-inbox"
-            style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}
-          >
-            <Inbox
-              inbox={inbox}
-              activeMsg={activeMsg}
-              onSelect={handleSelectMsg}
-              onDelete={deleteMsg}
-            />
-          </div>
-
-          {/* Mobile send form */}
           {tab === "send" && (
-            <div
-              className="mobile-only"
-              style={{ flex: 1, overflowY: "auto", padding: "0 20px 20px" }}
-            >
+            <div style={{ padding: "20px" }}>
+              <p
+                style={{
+                  fontSize: "14px",
+                  color: "var(--wa-text-muted)",
+                  marginBottom: "12px",
+                  fontWeight: "bold",
+                }}
+              >
+                SEND A FILE / MESSAGE DROP
+              </p>
               <SendForm
                 toId={toId}
                 setToId={setToId}
@@ -492,221 +656,458 @@ export default function App() {
             </div>
           )}
         </div>
+      </div>
 
-        {/* ── RIGHT PANEL ── */}
-        <div
-          className="right-panel"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            height: "100vh",
-            overflow: "hidden",
-          }}
-        >
-          {tab === "chat" ? (
-            /* ── LIVE CHAT UI ── */
+      {/* ── RIGHT PANEL (Chat Content / Drops Viewer) ── */}
+      <div
+        className="right-panel"
+        style={{
+          background: "var(--wa-bg)",
+          display: isMobile && !activeFriendId && !(tab === "inbox" && activeMsg) ? "none" : "flex",
+          flexDirection: "column",
+          height: "100vh",
+          overflow: "hidden",
+        }}
+      >
+        {activeFriendId && tab === "chats" ? (
+          /* ── WHATSAPP 1-to-1 CHAT INTERFACE ── */
+          <div className="chat-wall">
+            {/* Chat header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 16px",
+                background: "var(--wa-header)",
+                zIndex: 10,
+                borderBottom: "1px solid var(--wa-border)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                {isMobile && (
+                  <button
+                    onClick={() => setActiveFriendId(null)}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: "var(--wa-green)",
+                      cursor: "pointer",
+                      fontSize: "20px",
+                      paddingRight: "8px",
+                    }}
+                  >
+                    ←
+                  </button>
+                )}
+                <div className="chat-avatar">{activeFriendId.slice(0, 2)}</div>
+                <div>
+                  <h4 style={{ margin: 0, fontSize: "15px", color: "var(--wa-text)" }}>
+                    {activeFriendId}
+                  </h4>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+                    <span className={friendOnline ? "online-dot" : "offline-dot"} />
+                    <span style={{ fontSize: "11px", color: "var(--wa-text-muted)" }}>
+                      {friendOnline
+                        ? "online"
+                        : friendLastSeen
+                        ? `last seen ${timeAgo(friendLastSeen)}`
+                        : "offline"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Chat message threads */}
             <div
               style={{
                 flex: 1,
+                overflowY: "auto",
+                padding: "20px",
                 display: "flex",
                 flexDirection: "column",
-                background: "#0d0f14",
+                gap: "6px",
               }}
             >
-              {/* Chat header / room join */}
-              <div
-                style={{
-                  padding: "24px 40px",
-                  borderBottom: "1px solid #141820",
-                  background: "#0a0c12",
-                }}
-              >
+              {chatMessages.length === 0 ? (
                 <div
-                  style={{ display: "flex", justifyContent: "space-between" }}
+                  style={{
+                    margin: "auto",
+                    textAlign: "center",
+                    color: "var(--wa-text-muted)",
+                    maxWidth: "280px",
+                    fontSize: "13px",
+                  }}
                 >
-                  <div>
-                    <p
-                      style={{
-                        fontSize: 14,
-                        color: "#00e5a0",
-                        letterSpacing: "0.12em",
-                        fontWeight: "bold",
-                      }}
-                    >
-                      🔴 LIVE CHAT ROOM
-                    </p>
-                    <p style={{ fontSize: 12, color: "#4a6070", marginTop: 8 }}>
-                      Messages vanish forever when you close the app.
-                    </p>
-                  </div>
-                  {/* FIX: use isMobile state instead of window.innerWidth inline */}
-                  {isMobile && (
-                    <button
-                      className="btn-secondary"
-                      onClick={() => setTab("inbox")}
-                    >
-                      Close
-                    </button>
-                  )}
+                  🔐 End-to-end drop session started. Messages are saved in real-time.
                 </div>
-
-                <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-                  <input
-                    className="input-field"
-                    placeholder="Enter friend's ID to join..."
-                    value={chatRoomId}
-                    onChange={(e) =>
-                      setChatRoomId(e.target.value.toUpperCase())
-                    }
-                    style={{ flex: 1 }}
-                  />
-                  <button
-                    className="btn-secondary"
-                    onClick={() => joinLiveChat(chatRoomId)}
+              ) : (
+                chatMessages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`chat-bubble ${msg.sender === myId ? "sent" : "received"}`}
+                    style={{ position: "relative" }}
                   >
-                    Join Room
-                  </button>
-                </div>
-              </div>
+                    {/* Reply triggers on bubble */}
+                    <button
+                      className="bubble-reply-trigger"
+                      onClick={() =>
+                        setReplyingTo({
+                          id: msg.id,
+                          sender: msg.sender,
+                          text: msg.text,
+                          isImage: msg.isImage || false,
+                          isCode: msg.isCode || false,
+                        })
+                      }
+                      title="Reply"
+                    >
+                      ⤶
+                    </button>
 
-              {/* Chat message list */}
+                    {/* Reactions Popover Trigger */}
+                    <button
+                      className="bubble-reply-trigger"
+                      style={{ right: "32px", fontSize: "10px" }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveReactionMenu(activeReactionMenu === msg.id ? null : msg.id);
+                      }}
+                      title="React"
+                    >
+                      ☺
+                    </button>
+
+                    {/* Reactions panel selector */}
+                    {activeReactionMenu === msg.id && (
+                      <div className="reactions-panel" onClick={(e) => e.stopPropagation()}>
+                        {["👍", "❤️", "😂", "😮", "😢", "🙏"].map((emoji) => (
+                          <button
+                            key={emoji}
+                            className="reaction-option"
+                            onClick={() => handleReact(msg.id, emoji)}
+                          >
+                            {emoji}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Reply Quoted Card */}
+                    {msg.replyTo && (
+                      <div className="reply-quote-card">
+                        <p className="reply-quote-sender">
+                          {msg.replyTo.sender === myId ? "You" : msg.replyTo.sender}
+                        </p>
+                        <p className="reply-quote-text">
+                          {msg.replyTo.isImage ? "📷 Image" : msg.replyTo.isCode ? "⌨ Code" : msg.replyTo.text}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Message Body */}
+                    {msg.isCode ? (
+                      <div className="code-view" style={{ fontSize: "12px", marginTop: "4px" }}>
+                        {msg.text}
+                      </div>
+                    ) : msg.isImage ? (
+                      <img
+                        src={msg.text}
+                        alt="Shared image"
+                        style={{
+                          maxWidth: "100%",
+                          maxHeight: "260px",
+                          borderRadius: "6px",
+                          marginTop: "2px",
+                          display: "block",
+                        }}
+                      />
+                    ) : (
+                      <p style={{ margin: 0, paddingRight: "45px" }}>{msg.text}</p>
+                    )}
+
+                    {/* Bubble Reactions list */}
+                    {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                      <div
+                        className="bubble-reactions-list"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveReactionMenu(activeReactionMenu === msg.id ? null : msg.id);
+                        }}
+                      >
+                        {Object.values(msg.reactions).slice(0, 3).map((emo, idx) => (
+                          <span key={idx}>{emo}</span>
+                        ))}
+                        {Object.keys(msg.reactions).length > 1 && (
+                          <span style={{ fontSize: "9px", opacity: 0.8, marginLeft: "2px" }}>
+                            {Object.keys(msg.reactions).length}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Time & Double checkmarks status */}
+                    <span className="bubble-meta">
+                      {getFormatTime(msg.ts)}
+                      {msg.sender === myId && (
+                        <span style={{ color: "var(--wa-green)" }}>✓✓</span>
+                      )}
+                    </span>
+                  </div>
+                ))
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* Reply Input Strip */}
+            {replyingTo && (
               <div
                 style={{
-                  flex: 1,
-                  overflowY: "auto",
-                  padding: "24px 40px",
+                  background: "#1f2c34",
+                  padding: "8px 16px",
                   display: "flex",
-                  flexDirection: "column",
-                  gap: 12,
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  borderLeft: "4px solid var(--wa-green)",
                 }}
               >
-                {chatMessages.length === 0 ? (
+                <div style={{ fontSize: "13px" }}>
+                  <span style={{ color: "var(--wa-green)", fontWeight: 600 }}>
+                    Replying to {replyingTo.sender === myId ? "yourself" : replyingTo.sender}
+                  </span>
                   <p
                     style={{
-                      color: "#3d5060",
-                      textAlign: "center",
-                      marginTop: 40,
+                      color: "var(--wa-text-muted)",
+                      margin: "2px 0 0",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      maxWidth: "400px",
                     }}
                   >
-                    Room is empty or waiting for connection...
+                    {replyingTo.isImage ? "📷 Image" : replyingTo.isCode ? "⌨ Code" : replyingTo.text}
                   </p>
-                ) : (
-                  chatMessages.map((msg, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        alignSelf:
-                          msg.sender === myId ? "flex-end" : "flex-start",
-                        background:
-                          msg.sender === myId ? "#00e5a020" : "#141820",
-                        padding: "12px 16px",
-                        borderRadius: 8,
-                        maxWidth: "70%",
-                      }}
-                    >
-                      <p
-                        style={{
-                          fontSize: 10,
-                          color: msg.sender === myId ? "#00e5a0" : "#7c9aaa",
-                          marginBottom: 4,
-                        }}
-                      >
-                        {msg.sender === myId ? "you" : msg.sender}
-                      </p>
-                      <p
-                        style={{
-                          fontSize: 14,
-                          color: "#e2e8f0",
-                          wordBreak: "break-word",
-                        }}
-                      >
-                        {msg.text}
-                      </p>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* Chat input */}
-              <div
-                style={{
-                  padding: "24px 40px",
-                  borderTop: "1px solid #141820",
-                  background: "#0a0c12",
-                  display: "flex",
-                  gap: 10,
-                }}
-              >
-                <input
-                  id="live-chat-input"
-                  className="input-field"
-                  placeholder="Type a live message..."
-                  style={{ flex: 1 }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && e.target.value.trim()) {
-                      sendChatMessage(e.target.value.trim());
-                      e.target.value = "";
-                    }
-                  }}
-                />
+                </div>
                 <button
-                  className="btn-send"
-                  onClick={() => {
-                    const input = document.getElementById("live-chat-input");
-                    if (input?.value.trim()) {
-                      sendChatMessage(input.value.trim());
-                      input.value = "";
-                    }
+                  onClick={() => setReplyingTo(null)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--wa-text-muted)",
+                    fontSize: "18px",
+                    cursor: "pointer",
                   }}
                 >
-                  send live
+                  ×
                 </button>
               </div>
-            </div>
-          ) : (
-            /* ── INBOX / MESSAGE VIEWER UI ── */
-            <>
-              <MessageViewer
-                activeMsg={activeMsg}
-                onDelete={deleteMsg}
-                onReply={handleReply}
-              />
+            )}
 
-              {/* Desktop send form at bottom */}
-              <div
+            {/* Chat input panel */}
+            <div
+              style={{
+                padding: "10px 16px",
+                background: "var(--wa-header)",
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+                position: "relative",
+                borderTop: "1px solid var(--wa-border)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Emoji Panel Picker Popover */}
+              {showEmojiPicker && (
+                <EmojiPicker
+                  onSelectEmoji={(emoji) => {
+                    setChatInput((prev) => prev + emoji);
+                  }}
+                />
+              )}
+
+              {/* Emoji Button */}
+              <button
                 style={{
-                  borderTop: "1px solid #141820",
-                  padding: "24px 40px",
-                  background: "#0a0c12",
+                  background: "transparent",
+                  border: "none",
+                  fontSize: "22px",
+                  cursor: "pointer",
+                  color: "var(--wa-text-muted)",
                 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowEmojiPicker(!showEmojiPicker);
+                }}
+                title="Emojis"
               >
-                <p
+                😊
+              </button>
+
+              {/* Image attachment button */}
+              <label
+                style={{
+                  cursor: "pointer",
+                  fontSize: "22px",
+                  color: "var(--wa-text-muted)",
+                }}
+                title="Send Image"
+              >
+                📎
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleChatImageUpload}
+                  style={{ display: "none" }}
+                />
+              </label>
+
+              {/* Code Mode Toggle */}
+              <button
+                style={{
+                  background: "transparent",
+                  border: "1px solid " + (isCodeChat ? "var(--wa-green)" : "#374248"),
+                  color: isCodeChat ? "var(--wa-green)" : "var(--wa-text-muted)",
+                  padding: "4px 8px",
+                  borderRadius: "4px",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+                onClick={() => setIsCodeChat(!isCodeChat)}
+                title="Toggle Code Mode"
+              >
+                ⌨ Code
+              </button>
+
+              {/* Message Input text field */}
+              {isCodeChat ? (
+                <textarea
+                  className="textarea-field"
+                  style={{ height: "45px", flex: 1, padding: "8px 12px" }}
+                  placeholder="Paste your code snippet here..."
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendChatMessage(chatInput, false, true);
+                    }
+                  }}
+                />
+              ) : (
+                <input
+                  className="input-field"
+                  style={{ flex: 1 }}
+                  placeholder="Type a message..."
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && chatInput.trim()) {
+                      sendChatMessage(chatInput, false, false);
+                    }
+                  }}
+                />
+              )}
+
+              {/* Send message button */}
+              <button
+                className="btn-send"
+                style={{ padding: "9px 18px", borderRadius: "50%", width: "40px", height: "40px", display: "flex", alignItems: "center", justifyContent: "center" }}
+                onClick={() => sendChatMessage(chatInput, false, isCodeChat)}
+                disabled={!chatInput.trim()}
+              >
+                ➤
+              </button>
+            </div>
+          </div>
+        ) : tab === "inbox" && activeMsg ? (
+          /* ── legacy drops message viewer pane ── */
+          <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            {isMobile && (
+              <div style={{ padding: "10px 16px", background: "var(--wa-header)" }}>
+                <button
+                  onClick={() => setActiveMsg(null)}
                   style={{
-                    fontSize: 14,
-                    color: "#bfcdd9",
-                    letterSpacing: "0.12em",
-                    marginBottom: 14,
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--wa-green)",
+                    cursor: "pointer",
+                    fontSize: "16px",
                   }}
                 >
-                  SEND A DROP
-                </p>
-                <SendForm
-                  toId={toId}
-                  setToId={setToId}
-                  message={message}
-                  setMessage={setMessage}
-                  isCode={isCode}
-                  setIsCode={setIsCode}
-                  sending={sending}
-                  sendStatus={sendStatus}
-                  onSend={() => send()}
-                  onImageUpload={handleImageUpload}
-                  compact
-                />
+                  ← Back to Inbox
+                </button>
               </div>
-            </>
-          )}
-        </div>
+            )}
+            <MessageViewer
+              activeMsg={activeMsg}
+              onDelete={deleteMsg}
+              onReply={handleReply}
+            />
+          </div>
+        ) : (
+          /* ── PREMIUM WELCOME EMPTY SCREEN STATE ── */
+          <div
+            style={{
+              flex: 1,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "#222e35",
+              color: "var(--wa-text-muted)",
+              textAlign: "center",
+              padding: "40px",
+            }}
+          >
+            <div
+              style={{
+                width: "90px",
+                height: "90px",
+                borderRadius: "50%",
+                background: "rgba(0, 168, 132, 0.15)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: "42px",
+                color: "var(--wa-green)",
+                marginBottom: "20px",
+                boxShadow: "0 8px 24px rgba(0, 0, 0, 0.2)",
+              }}
+            >
+              📥
+            </div>
+            <h2 style={{ color: "var(--wa-text)", marginBottom: "8px", fontWeight: 600 }}>
+              Drop.Transfer Chat
+            </h2>
+            <p style={{ maxWidth: "420px", fontSize: "14px", lineHeight: 1.6, marginBottom: "24px" }}>
+              Secure, instant, real-time message and code sharing. Connect directly with user IDs, drop text/code/images, and react instantly.
+            </p>
+            <div
+              style={{
+                background: "var(--wa-sidebar)",
+                border: "1px solid var(--wa-border)",
+                borderRadius: "8px",
+                padding: "16px",
+                maxWidth: "400px",
+                textAlign: "left",
+                fontSize: "12px",
+              }}
+            >
+              <p style={{ fontWeight: "bold", color: "var(--wa-text)", marginBottom: "8px" }}>
+                💡 Quick tips to get started:
+              </p>
+              <ul style={{ paddingLeft: "18px", lineHeight: "1.8", margin: 0 }}>
+                <li>Share your unique ID (shown in header) to receive messages.</li>
+                <li>Start a chat by entering a Friend's ID and clicking &quot;Chat&quot;.</li>
+                <li>Toggle &quot;Code mode&quot; in chats to send formatted code blocks.</li>
+                <li>Hover over message bubbles to reply or add emoji reactions.</li>
+              </ul>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

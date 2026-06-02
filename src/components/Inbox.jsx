@@ -1,4 +1,4 @@
-import { timeAgo } from "./utils/helpers";
+import { timeAgo } from "../utils/helpers";
 
 export default function Inbox({ inbox, activeMsg, onSelect, onDelete }) {
   if (inbox.length === 0) {

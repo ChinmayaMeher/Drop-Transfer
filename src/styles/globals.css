@@ -7,11 +7,11 @@
   --wa-search: #1f2c34;
   --wa-input: #2a3942;
   --wa-incoming: #202c33;
-  --wa-outgoing: #005c4b;
+  --wa-outgoing: #007d67;
   --wa-green: #00a884;
   --wa-text: #e9edef;
   --wa-text-muted: #8696a0;
-  --wa-border: #222d34;
+  --wa-border: #2e3c45;
   --wa-accent: #00e5a0;
 }
 
@@ -81,7 +81,7 @@ body {
 .btn-secondary:hover {
   border-color: var(--wa-text-muted);
   color: var(--wa-text);
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0);
 }
 
 /* Tabs */
@@ -104,7 +104,7 @@ body {
 
 /* Inbox Message card */
 .msg-card {
-  background: #182229;
+  background: #202e38;
   border: 1px solid var(--wa-border);
   border-radius: 8px;
   padding: 14px 16px;
@@ -293,7 +293,10 @@ body {
 .chat-wall {
   position: relative;
   background-color: #0b141a;
-  background-image: radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 0);
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.03) 1px,
+    transparent 0
+  );
   background-size: 24px 24px;
   flex: 1;
   display: flex;
@@ -446,7 +449,7 @@ body {
   display: flex;
   gap: 6px;
   padding: 5px 10px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
   z-index: 100;
 }
 
@@ -475,7 +478,7 @@ body {
   align-items: center;
   gap: 2px;
   font-size: 11px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   z-index: 10;
   cursor: pointer;
 }

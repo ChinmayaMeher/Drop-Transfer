@@ -91,7 +91,7 @@ export default function SendForm({
             htmlFor="image-upload"
             style={{
               cursor: "pointer",
-              color: "#00e5a0",
+              color: "#04ffb4",
               fontSize: "14px",
               display: "flex",
               alignItems: "center",

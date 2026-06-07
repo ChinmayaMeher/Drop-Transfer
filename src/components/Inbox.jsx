@@ -3,10 +3,10 @@ import { timeAgo } from "../utils/helpers";
 export default function Inbox({ inbox, activeMsg, onSelect, onDelete }) {
   if (inbox.length === 0) {
     return (
-      <div style={{ textAlign: "center", padding: "40px 0", color: "#2d3748" }}>
+      <div style={{ textAlign: "center", padding: "40px 0", color: "#303a4c" }}>
         <div style={{ fontSize: 32, marginBottom: 12 }}>⊡</div>
         <p style={{ fontSize: 12, letterSpacing: "0.08em" }}>no messages yet</p>
-        <p style={{ fontSize: 11, color: "#1e2535", marginTop: 6 }}>
+        <p style={{ fontSize: 11, color: "#1e2434", marginTop: 6 }}>
           share your ID to receive drops
         </p>
       </div>

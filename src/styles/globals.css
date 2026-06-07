@@ -104,7 +104,7 @@ body {
 
 /* Inbox Message card */
 .msg-card {
-  background: #202e38;
+  background: #233441;
   border: 1px solid var(--wa-border);
   border-radius: 8px;
   padding: 14px 16px;

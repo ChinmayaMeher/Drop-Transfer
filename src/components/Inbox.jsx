@@ -30,7 +30,7 @@ export default function Inbox({ inbox, activeMsg, onSelect, onDelete }) {
             }}
           >
             <span style={{ fontSize: 11, color: "#4a6070", flex: 1 }}>
-              from: <span style={{ color: "#7c9aaa" }}>{msg.from}</span>
+              from: <span style={{ color: "#7b9aab" }}>{msg.from}</span>
             </span>
             <span className={`tag ${msg.isCode ? "tag-code" : "tag-msg"}`}>
               {msg.isCode ? "code" : "msg"}
